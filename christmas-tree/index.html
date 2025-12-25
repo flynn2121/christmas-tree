@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Layered Pink Christmas Tree</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #050005; /* 极深紫黑背景 */
+            font-family: 'Times New Roman', serif;
+            user-select: none;
+        }
+
+        #ui-container {
+            position: absolute;
+            top: 5vh;
+            left: 0;
+            width: 100%;
+            text-align: center;
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        h1 {
+            color: #FF69B4;
+            font-size: clamp(2rem, 5vw, 4rem);
+            margin: 0;
+            letter-spacing: 6px;
+            text-shadow: 0 0 15px rgba(255, 105, 180, 0.6), 0 0 30px rgba(255, 255, 255, 0.4);
+            font-weight: lighter;
+            opacity: 0.95;
+        }
+
+        #instruction {
+            color: #dda0dd;
+            font-size: 0.9rem;
+            margin-top: 15px;
+            letter-spacing: 2px;
+            opacity: 0.8;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui-container">
+        <h1>MERRY CHRISTMAS</h1>
+        <div id="instruction">Click to Transform | Scroll to Zoom</div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+                "gsap": "https://cdn.jsdelivr.net/npm/gsap@3.12.5/index.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+        import gsap from 'gsap';
+
+        // --- 1. 核心配置 ---
+        const CONFIG = {
+            particleCount: 40000, // 增加粒子数以填充层级
+            colors: {
+                deepPink: new THREE.Color('#FF1493'),
+                lightPink: new THREE.Color('#FFB6C1'),
+                hotPink: new THREE.Color('#FF69B4'),
+                champagne: new THREE.Color('#FFD700'),
+                star: new THREE.Color('#FFFF00'),
+                white: new THREE.Color('#FFFFFF')
+            }
+        };
+
+        // --- 2. 场景 ---
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x050005, 0.015); 
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 5, 45);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        document.body.appendChild(renderer.domElement);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+        controls.autoRotate = true;
+        controls.autoRotateSpeed = 0.6;
+        controls.enableZoom = true;
+        controls.minDistance = 10;
+        controls.maxDistance = 100;
+
+        // --- 3. 材质 ---
+        function createGlowTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 32; canvas.height = 32;
+            const ctx = canvas.getContext('2d');
+            const gradient = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+            gradient.addColorStop(0, 'rgba(255,255,255,1)');
+            gradient.addColorStop(0.3, 'rgba(255,255,255,0.5)');
+            gradient.addColorStop(1, 'rgba(0,0,0,0)');
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, 32, 32);
+            const texture = new THREE.Texture(canvas);
+            texture.needsUpdate = true;
+            return texture;
+        }
+
+        const particleMaterial = new THREE.PointsMaterial({
+            size: 0.6, // 粒子大小
+            map: createGlowTexture(),
+            transparent: true,
+            opacity: 0.9,
+            vertexColors: true,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            sizeAttenuation: true
+        });
+
+        // --- 4. 关键位置算法 (层级 + 棱角) ---
+
+        // A. 树身：分层松树算法
+        function getTreePos() {
+            const treeHeight = 24;
+            const tiers = 8; // 将树分为8层
+            
+            // 随机高度 (-12 到 12)
+            const y = (Math.random() * treeHeight) - (treeHeight / 2);
+            
+            // 归一化高度 (0:底部 -> 1:顶部)
+            const normY = (y + treeHeight/2) / treeHeight;
+            
+            // 计算当前粒子属于哪一层 (0到7)
+            // 反转normY，让0层在下面
+            const tierIndex = Math.floor((1 - normY) * tiers);
+            const tierProgress = ((1 - normY) * tiers) % 1; // 0(层顶) -> 1(层底)
+            
+            // 每一层的基准最大半径
+            // 越到底层的层级，半径越大
+            const tierMaxRadius = 2 + (tierIndex * 1.5); 
+            
+            // 层内形状：上窄下宽的裙摆状
+            // tierProgress 越大(越靠下)，半径越大
+            let rLayer = tierMaxRadius * (0.2 + 0.8 * tierProgress);
+
+            // --- 关键：棱角生成 (Five-Pointed Shape) ---
+            const angle = Math.random() * Math.PI * 2;
+            
+            // 使用 Cosine 函数模拟树枝伸展
+            // cos(5 * angle) 会产生5个凸起
+            // (0.8 + 0.2 * ...) 意味着半径在 0.6 到 1.0 之间波动
+            const branchFactor = 0.8 + 0.3 * Math.cos(angle * 5 + tierIndex); // tierIndex让每层错开一点
+            
+            // 综合半径
+            let r = rLayer * branchFactor;
+            
+            // 内部体积填充 (防止空心)
+            r *= Math.sqrt(Math.random());
+            
+            // 加上噪点，让边缘毛茸茸
+            r += (Math.random() - 0.5) * 0.5;
+
+            return new THREE.Vector3(Math.cos(angle) * r, y, Math.sin(angle) * r);
+        }
+
+        // B. 五角星
+        function getStarPos() {
+            const angle = Math.random() * Math.PI * 2;
+            const k = 5; 
+            const rBound = 1.8 * (0.6 + 0.4 * Math.cos(k * angle)); 
+            const r = Math.sqrt(Math.random()) * rBound;
+            return new THREE.Vector3(r * Math.cos(angle), 12.5 + r * Math.sin(angle), (Math.random() - 0.5) * 0.6);
+        }
+
+        // C. 地面
+        function getFloorPos() {
+            const angle = Math.random() * Math.PI * 2;
+            const r = 4 + Math.sqrt(Math.random()) * 20;
+            return new THREE.Vector3(Math.cos(angle) * r, -13.0 + (Math.random() * 0.6), Math.sin(angle) * r);
+        }
+
+        // D. 雪花
+        function getSnowPos() {
+            const range = 80;
+            return new THREE.Vector3((Math.random() - 0.5) * range, (Math.random() - 0.5) * range, (Math.random() - 0.5) * range);
+        }
+
+        // E. 文字
+        function getTextPositions() {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            const width = 1024; const height = 512;
+            canvas.width = width; canvas.height = height;
+            
+            ctx.fillStyle = '#FFFFFF';
+            ctx.font = 'bold 140px "Times New Roman", serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            
+            ctx.fillText('MERRY', width / 2, height / 2 - 80);
+            ctx.fillText('CHRISTMAS', width / 2, height / 2 + 80);
+            
+            const data = ctx.getImageData(0,0,width,height).data;
+            const points = [];
+            const step = 2; 
+            for(let y=0; y<height; y+=step) {
+                for(let x=0; x<width; x+=step) {
+                    if(data[(y*width+x)*4+3] > 128) {
+                        points.push(new THREE.Vector3((x - width / 2) * 0.045, -(y - height / 2) * 0.045, 0));
+                    }
+                }
+            }
+            return points;
+        }
+
+        // --- 5. 构建粒子 ---
+        const geometry = new THREE.BufferGeometry();
+        const positions = new Float32Array(CONFIG.particleCount * 3);
+        const colors = new Float32Array(CONFIG.particleCount * 3);
+        
+        const particlesData = [];
+        const textPoints = getTextPositions();
+
+        const treeCount = 25000; // 树需要更多粒子来表现层级
+        const starCount = 800;
+        const floorCount = 5000;
+
+        for (let i = 0; i < CONFIG.particleCount; i++) {
+            let targetPos, color, group;
+            
+            if (i < treeCount) {
+                targetPos = getTreePos();
+                group = 'tree';
+                const rand = Math.random();
+                if(rand > 0.7) color = CONFIG.colors.hotPink; 
+                else if(rand > 0.3) color = CONFIG.colors.deepPink;
+                else if(rand > 0.15) color = CONFIG.colors.lightPink;
+                else color = CONFIG.colors.champagne;
+            } 
+            else if (i < treeCount + starCount) {
+                targetPos = getStarPos();
+                group = 'star';
+                color = CONFIG.colors.star; 
+            } 
+            else if (i < treeCount + starCount + floorCount) {
+                targetPos = getFloorPos();
+                group = 'floor';
+                color = CONFIG.colors.white; 
+            } 
+            else {
+                targetPos = getSnowPos();
+                group = 'snow';
+                color = CONFIG.colors.white;
+            }
+
+            const tP = textPoints[i % textPoints.length];
+            const textPos = tP ? tP.clone() : new THREE.Vector3((Math.random()-0.5)*60, (Math.random()-0.5)*60, (Math.random()-0.5)*60);
+            if(tP) textPos.z += (Math.random()-0.5) * 1.5;
+
+            const r = 20 + Math.random() * 40;
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const explodePos = new THREE.Vector3(r * Math.sin(phi) * Math.cos(theta), r * Math.sin(phi) * Math.sin(theta), r * Math.cos(phi));
+
+            positions[i * 3] = targetPos.x;
+            positions[i * 3 + 1] = targetPos.y;
+            positions[i * 3 + 2] = targetPos.z;
+            colors[i * 3] = color.r;
+            colors[i * 3 + 1] = color.g;
+            colors[i * 3 + 2] = color.b;
+
+            particlesData.push({
+                current: targetPos.clone(),
+                targets: { tree: targetPos, explode: explodePos, text: textPos },
+                group: group,
+                randomOffset: new THREE.Vector3((Math.random()-0.5)*0.08, (Math.random()-0.5)*0.08, (Math.random()-0.5)*0.08)
+            });
+        }
+
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        const particleSystem = new THREE.Points(geometry, particleMaterial);
+        scene.add(particleSystem);
+
+        // --- 6. 后期处理 ---
+        const renderScene = new RenderPass(scene, camera);
+        const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+        bloomPass.threshold = 0.1;
+        bloomPass.strength = 1.3; 
+        bloomPass.radius = 0.6;
+
+        const composer = new EffectComposer(renderer);
+        composer.addPass(renderScene);
+        composer.addPass(bloomPass);
+
+        // --- 7. 动画与交互 ---
+        const states = ['tree', 'explode', 'text'];
+        let currentState = 'tree';
+        let isAnimating = false;
+
+        function transformTo(nextState) {
+            if (isAnimating) return;
+            isAnimating = true;
+            currentState = nextState;
+
+            const anim = { value: 0 };
+            particlesData.forEach(p => p.startPos = p.current.clone());
+
+            gsap.to(anim, {
+                value: 1, duration: 2.0, ease: "power2.inOut",
+                onUpdate: () => {
+                    const posArr = geometry.attributes.position.array;
+                    for(let i=0; i<CONFIG.particleCount; i++) {
+                        const p = particlesData[i];
+                        const target = p.targets[nextState];
+                        p.current.lerpVectors(p.startPos, target, anim.value);
+                        if(currentState === 'tree' && p.group !== 'snow') p.current.add(p.randomOffset);
+                        posArr[i*3] = p.current.x;
+                        posArr[i*3+1] = p.current.y;
+                        posArr[i*3+2] = p.current.z;
+                    }
+                    geometry.attributes.position.needsUpdate = true;
+                },
+                onComplete: () => isAnimating = false
+            });
+        }
+
+        let mouseDownTime = 0;
+        window.addEventListener('mousedown', () => mouseDownTime = Date.now());
+        window.addEventListener('mouseup', () => {
+            if (Date.now() - mouseDownTime < 200) {
+                playMusic();
+                let nextIndex = (states.indexOf(currentState) + 1) % states.length;
+                transformTo(states[nextIndex]);
+            }
+        });
+
+        let audioCtx;
+        function playMusic() {
+            if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            if(audioCtx.state === 'suspended') audioCtx.resume();
+            const now = audioCtx.currentTime;
+            const notes = [659.25, 587.33, 659.25, 830.61, 987.77, 1318.51]; 
+            notes.forEach((f, i) => {
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = 'sine'; osc.frequency.value = f;
+                osc.connect(gain); gain.connect(audioCtx.destination);
+                osc.start(now + i*0.15); osc.stop(now + i*0.15 + 1.8);
+                gain.gain.setValueAtTime(0, now + i*0.15);
+                gain.gain.linearRampToValueAtTime(0.08, now + i*0.15 + 0.1);
+                gain.gain.exponentialRampToValueAtTime(0.001, now + i*0.15 + 1.5);
+            });
+        }
+
+        const clock = new THREE.Clock();
+        function animate() {
+            requestAnimationFrame(animate);
+            const time = clock.getElapsedTime();
+            controls.update();
+            if (currentState === 'tree' && !isAnimating) {
+                const posArr = geometry.attributes.position.array;
+                for(let i=0; i<CONFIG.particleCount; i++) {
+                    const p = particlesData[i];
+                    if (p.group === 'snow') {
+                        let y = posArr[i*3+1];
+                        y -= 0.06; if (y < -30) y = 30;
+                        posArr[i*3+1] = y; p.current.y = y;
+                    }
+                }
+                geometry.attributes.position.needsUpdate = true;
+                // 树身缓慢旋转
+                particleSystem.rotation.y = time * 0.1;
+            } else {
+                particleSystem.rotation.y = 0;
+            }
+            composer.render();
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+        });
+        animate();
+    </script>
+</body>
+</html>
